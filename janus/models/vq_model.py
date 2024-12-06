@@ -507,10 +507,12 @@ class VQModel(nn.Module):
         dec = self.decode(quant_b)
         return dec
 
+    # --------------------------------------------------------------------------------------------------
     def forward(self, input):
-        quant, diff, _ = self.encode(input)
-        dec = self.decode(quant)
-        return dec, diff
+        quant, diff, info = self.encode(input)
+        # dec = self.decode(quant)
+        return quant, diff, info
+    # --------------------------------------------------------------------------------------------------
 
 
 #################################################################################

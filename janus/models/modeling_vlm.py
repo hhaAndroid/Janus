@@ -31,6 +31,7 @@ from transformers.configuration_utils import PretrainedConfig
 
 from janus.models.clip_encoder import CLIPVisionTower
 from janus.models.projector import MlpProjector
+from torch.nn import functional as F
 
 
 class vision_head(torch.nn.Module):
@@ -261,6 +262,78 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
 
     def prepare_gen_img_embeds(self, image_ids: torch.LongTensor):
         return self.gen_aligner(self.gen_embed(image_ids))
+
+    # --------------------------------------------------------------------------------------------------
+    def forward(self, input_ids, labels, pixel_values, image_flags, gen_image_bounds, image_id):
+        pixel_values_in = pixel_values[0::2, ...]  # b,3,h,w
+        pixel_values_out = pixel_values[1::2, ...]  # b,3,h,w
+
+        n = pixel_values_in.shape[0]
+        # [b, 576, D]
+        vision_model_dtype = next(self.vision_model.parameters()).dtype
+        images_embeds_in = self.aligner(self.vision_model(pixel_values_in.to(dtype=vision_model_dtype)))
+        images_embeds_in = images_embeds_in[image_flags == 1]
+
+        quant, _, info = self.gen_vision_model(pixel_values_out.to(dtype=vision_model_dtype))
+        quant = quant.permute(0, 2, 3, 1).flatten(start_dim=1, end_dim=2)
+        images_embeds_out = self.gen_aligner(quant)
+        images_embeds_out = images_embeds_out[image_flags == 1]
+
+        vit_embeds = images_embeds_out.new_zeros((n * 2, *images_embeds_out.shape[1:]),
+                                                 requires_grad=images_embeds_out.requires_grad)
+        vit_embeds[0::2, ...] = images_embeds_in
+        vit_embeds[1::2, ...] = images_embeds_out
+
+        input_embeds = self.language_model.get_input_embeddings()(input_ids)
+
+        B, N, C = input_embeds.shape
+        input_ids = input_ids.reshape(B * N)
+        input_embeds = input_embeds.reshape(B * N, C)
+        selected = (input_ids == image_id)
+
+        input_embeds[selected] = input_embeds[selected] * 0.0 + vit_embeds.reshape(-1, C)
+        input_embeds = input_embeds.reshape(B, N, C)
+
+        outputs = self.language_model.model(
+            inputs_embeds=input_embeds,
+            use_cache=False,
+        )
+        hidden_states = outputs.last_hidden_state  # b,c,d
+        hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
+
+        start_bound = gen_image_bounds[0::2]
+        end_bound = gen_image_bounds[1::2]
+        assert len(start_bound) == len(end_bound)
+
+        mask = torch.zeros(hidden_states.shape[0], dtype=torch.bool)
+        for start, end in zip(start_bound, end_bound):
+            mask[start:end] = True
+
+        assert torch.all(input_ids[mask] == image_id)
+
+        hidden_states_gen = hidden_states[mask]
+        assert hidden_states_gen.shape[0] == images_embeds_out.shape[0] * images_embeds_out.shape[1]
+        hidden_states_und = hidden_states[~mask]
+
+        labels = labels.reshape(-1)
+        und_labels = labels[~mask]
+        gen_labels = info[2]
+        assert len(gen_labels) == len(labels[mask])
+
+        gen_logits = self.gen_head(hidden_states_gen)
+        gen_loss = F.cross_entropy(gen_logits.float()[:-1, ...], gen_labels[1:, ...], reduction='sum')  # 1, seqlen
+        if torch.isnan(gen_loss) and (gen_labels[1:, ...] != -100).sum() == 0:
+            # When all labels are -100, the CE loss will return NaN and requires special handling.
+            gen_loss = gen_logits.sum() * 0
+
+        und_logits = self.language_model.lm_head(hidden_states_und)
+        und_loss = F.cross_entropy(und_logits.float(), und_labels, reduction='sum')  # 1, seqlen
+        if torch.isnan(und_loss) and (und_labels != -100).sum() == 0:
+            # When all labels are -100, the CE loss will return NaN and requires special handling.
+            und_loss = und_logits.sum() * 0
+
+        return gen_loss, und_loss
+    # --------------------------------------------------------------------------------------------------
 
 
 AutoConfig.register("vision", VisionConfig)
