@@ -35,7 +35,7 @@ from typing import (
     Type,
     Union,
 )
-
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -387,9 +387,11 @@ class VisionTransformer(nn.Module):
             self.patch_drop = nn.Identity()
         self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
-        dpr = [
-            x.item() for x in torch.linspace(0, drop_path_rate, depth)
-        ]  # stochastic depth decay rule
+        # dpr = [
+        #     x.item() for x in torch.linspace(0, drop_path_rate, depth)
+        # ]  # stochastic depth decay rule
+        dpr = np.linspace(0.0, drop_path_rate, depth)
+
         self.blocks = nn.Sequential(
             *[
                 block_fn(
