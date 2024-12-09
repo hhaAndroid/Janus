@@ -312,39 +312,45 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
             mask[start:end] = True
 
             # 取出 und_gen 的部分
-            # 1: end_image, 1: bos_id, 1: start_image
-            und_gen = end + 1 + 1 + 1
+            # end_image, eos_id, bos_id, start_image
+            und_gen = end + 4
             mask[und_gen:und_gen + 576] = True
 
         assert torch.all(input_ids[mask] == image_id)
 
         hidden_states_gen = hidden_states[mask]
-        assert hidden_states_gen.shape[0] == images_embeds_out.shape[0] * images_embeds_out.shape[1]
+        assert hidden_states_gen.shape[0] == images_embeds_out.shape[0] * images_embeds_out.shape[1] * 2
 
         hidden_states_und = hidden_states[~mask]
 
         labels = labels.reshape(-1)
         und_labels = labels[~mask]
         gen_labels = info[2]
-        assert len(gen_labels) == len(labels[mask])
+        assert len(gen_labels) == len(labels[mask]) // 2
 
         gen_logits = self.gen_head(hidden_states_gen)
 
         # 有条件和无条件加权
         assert gen_logits.shape[0] % 576 == 0
 
-        gen_logits = gen_logits.reshape(576, -1, gen_logits.shape[-1])
-        logit_cond = gen_logits[:, 0::2, :]
-        logit_uncond = gen_logits[:, 1::2, :]
+        gen_logits = gen_logits.reshape(-1, 576, gen_logits.shape[-1])
+        logit_cond = gen_logits[0::2, ...]
+        logit_uncond = gen_logits[1::2, ...]
         cfg_weight = 5
         gen_logits = logit_uncond + cfg_weight * (logit_cond - logit_uncond)
+        gen_labels = gen_labels.reshape(-1, 576)
 
-        gen_loss = F.cross_entropy(gen_logits.float()[:-1, ...], gen_labels[1:, ...], reduction='sum')  # 1, seqlen
+        gen_logits = gen_logits[:, :-1, ...].contiguous()
+        gen_labels = gen_labels[:, 1:, ...].contiguous()
+        gen_loss = F.cross_entropy(gen_logits.view(-1, gen_logits.shape[-1]).float(), gen_labels.view(-1),
+                                   reduction='sum')  # 1, seqlen
         if torch.isnan(gen_loss) and (gen_labels[1:, ...] != -100).sum() == 0:
             # When all labels are -100, the CE loss will return NaN and requires special handling.
             gen_loss = gen_logits.sum() * 0
 
         und_logits = self.language_model.lm_head(hidden_states_und)
+        und_logits = und_logits[:-1, ...].contiguous()
+        und_labels = und_labels[1:, ...].contiguous()
         und_loss = F.cross_entropy(und_logits.float(), und_labels, reduction='sum')  # 1, seqlen
         if torch.isnan(und_loss) and (und_labels != -100).sum() == 0:
             # When all labels are -100, the CE loss will return NaN and requires special handling.
