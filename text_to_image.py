@@ -49,7 +49,7 @@ def generate(
     tokens = torch.zeros((parallel_size * 2, len(input_ids)), dtype=torch.int).cuda()
     for i in range(parallel_size * 2):
         tokens[i, :] = input_ids
-        if i % 2 != 0:  # 无条件生图，就是把所有的 token 都设置为 pad，保留第一个和最后一个 token 不改变
+        if i % 2 != 0:  # 无条件生图，就是把所有的 token 都设置为 pad，保留第一个(全局开始符)和最后一个 token(image_start_tag) 不改变
             tokens[i, 1:-1] = vl_chat_processor.pad_id
 
     # 有条件和无条件是独立的，分别生成，然后加权得到最终图

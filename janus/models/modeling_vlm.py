@@ -279,10 +279,12 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         images_embeds_out = self.gen_aligner(quant)
         images_embeds_out = images_embeds_out[image_flags == 1]
 
-        vit_embeds = images_embeds_out.new_zeros((n * 2, *images_embeds_out.shape[1:]),
+        # 需要额外考虑 und_gen 的情况
+        vit_embeds = images_embeds_out.new_zeros((n * 3, *images_embeds_out.shape[1:]),
                                                  requires_grad=images_embeds_out.requires_grad)
-        vit_embeds[0::2, ...] = images_embeds_in
-        vit_embeds[1::2, ...] = images_embeds_out
+        vit_embeds[0::3, ...] = images_embeds_in
+        vit_embeds[1::3, ...] = images_embeds_out
+        vit_embeds[2::3, ...] = images_embeds_out
 
         input_embeds = self.language_model.get_input_embeddings()(input_ids)
 
@@ -309,10 +311,16 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         for start, end in zip(start_bound, end_bound):
             mask[start:end] = True
 
+            # 取出 und_gen 的部分
+            # 1: end_image, 1: bos_id, 1: start_image
+            und_gen = end + 1 + 1 + 1
+            mask[und_gen:und_gen + 576] = True
+
         assert torch.all(input_ids[mask] == image_id)
 
         hidden_states_gen = hidden_states[mask]
         assert hidden_states_gen.shape[0] == images_embeds_out.shape[0] * images_embeds_out.shape[1]
+
         hidden_states_und = hidden_states[~mask]
 
         labels = labels.reshape(-1)
@@ -321,6 +329,16 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         assert len(gen_labels) == len(labels[mask])
 
         gen_logits = self.gen_head(hidden_states_gen)
+
+        # 有条件和无条件加权
+        assert gen_logits.shape[0] % 576 == 0
+
+        gen_logits = gen_logits.reshape(576, -1, gen_logits.shape[-1])
+        logit_cond = gen_logits[:, 0::2, :]
+        logit_uncond = gen_logits[:, 1::2, :]
+        cfg_weight = 5
+        gen_logits = logit_uncond + cfg_weight * (logit_cond - logit_uncond)
+
         gen_loss = F.cross_entropy(gen_logits.float()[:-1, ...], gen_labels[1:, ...], reduction='sum')  # 1, seqlen
         if torch.isnan(gen_loss) and (gen_labels[1:, ...] != -100).sum() == 0:
             # When all labels are -100, the CE loss will return NaN and requires special handling.
