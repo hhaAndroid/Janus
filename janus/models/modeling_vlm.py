@@ -279,12 +279,7 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         images_embeds_out = self.gen_aligner(quant)
         images_embeds_out = images_embeds_out[image_flags == 1]
 
-        # 需要额外考虑 und_gen 的情况
-        vit_embeds = images_embeds_out.new_zeros((n * 3, *images_embeds_out.shape[1:]),
-                                                 requires_grad=images_embeds_out.requires_grad)
-        vit_embeds[0::3, ...] = images_embeds_in
-        vit_embeds[1::3, ...] = images_embeds_out
-        vit_embeds[2::3, ...] = images_embeds_out
+        vit_embeds = torch.stack([images_embeds_in, images_embeds_out, images_embeds_out], dim=1).flatten(0, 1)
 
         input_embeds = self.language_model.get_input_embeddings()(input_ids)
 
