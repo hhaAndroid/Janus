@@ -261,7 +261,9 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         return inputs_embeds
 
     def prepare_gen_img_embeds(self, image_ids: torch.LongTensor):
-        return self.gen_aligner(self.gen_embed(image_ids))
+        embedding = F.normalize(self.gen_vision_model.quantize.embedding.weight, p=2, dim=-1)
+        return self.gen_aligner(embedding[image_ids])
+        # return self.gen_aligner(self.gen_embed(image_ids))
 
     # --------------------------------------------------------------------------------------------------
     def forward(self, input_ids, labels, pixel_values, image_flags, gen_image_bounds, image_id):
