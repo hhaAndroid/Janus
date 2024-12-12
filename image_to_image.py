@@ -57,6 +57,7 @@ else:
     all_conversation.append(conversation)
 
 vl_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
+vl_chat_processor.system_prompt = ''
 tokenizer = vl_chat_processor.tokenizer
 
 vl_gpt: MultiModalityCausalLM = AutoModelForCausalLM.from_pretrained(

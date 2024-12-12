@@ -30,7 +30,7 @@ if __name__ == '__main__':
     with open(annotation) as f:
         data = f.readlines()
     data = [json.loads(d) for d in data]
-    data = random.choices(data, k=random_choice_num_pre_gpu*world_size)
+    data = random.choices(data, k=random_choice_num_pre_gpu * world_size)
 
     if rank == 0:
         os.makedirs('generated_samples', exist_ok=True)
@@ -59,6 +59,8 @@ if __name__ == '__main__':
         all_conversation.append(conversation)
 
     vl_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
+    vl_chat_processor.system_prompt = ''
+
     tokenizer = vl_chat_processor.tokenizer
 
     vl_gpt: MultiModalityCausalLM = AutoModelForCausalLM.from_pretrained(
