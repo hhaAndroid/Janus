@@ -290,7 +290,7 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
             images_embeds_out = torch.cat([placehold_img_embeds[None, None].repeat(images_embeds_out.shape[0], 1, 1),
                                            images_embeds_out[:, 1:, ...]], dim=1)
         if use_und_gen:
-            vit_embeds = torch.stack([images_embeds_out, images_embeds_out, images_embeds_out], dim=1).flatten(0, 1)
+            vit_embeds = torch.stack([images_embeds_in, images_embeds_out, images_embeds_out], dim=1).flatten(0, 1)
         else:
             vit_embeds = torch.stack([images_embeds_in, images_embeds_out], dim=1).flatten(0, 1)
 
