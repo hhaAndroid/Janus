@@ -30,7 +30,7 @@ if __name__ == '__main__':
     with open(annotation) as f:
         data = f.readlines()
     data = [json.loads(d) for d in data]
-    data = random.choices(data, k=random_choice_num_pre_gpu * world_size)
+    data = random.choices(data, k=random_choice_num_pre_gpu*world_size)
 
     if rank == 0:
         os.makedirs('generated_samples', exist_ok=True)
@@ -71,8 +71,6 @@ if __name__ == '__main__':
     pred_datas = []
 
     for k, conversation in enumerate(all_conversation):
-        pred_data = {"inputs": conversation[0]['content']}
-
         print(f' {rank} ====================={k}============================')
         print('input:', conversation[0]['content'], '====')
         pil_images = load_pil_images(conversation)
@@ -83,6 +81,8 @@ if __name__ == '__main__':
         is_image_placehold = False
 
         for j in range(repeat_time):
+            pred_data = {"inputs": conversation[0]['content']}
+
             inputs_embeds = vl_gpt.prepare_inputs_embeds(**prepare_inputs)
 
             is_image_gen = False
@@ -140,7 +140,7 @@ if __name__ == '__main__':
 
             save_path = os.path.join('generated_samples', "rank{}_{}_img_{}.jpg".format(rank, k, j))
             PIL.Image.fromarray(visual_img[0]).save(save_path)
-            pred_data[f'file'] = "rank{}_{}_img_{}.jpg".format(rank, k, j)
+            pred_data['file'] = "rank{}_{}_img_{}.jpg".format(rank, k, j)
             pred_datas.append(pred_data)
 
     pred_datas = all_gather_object(pred_datas)
