@@ -217,6 +217,7 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         )
 
         language_config = config.language_config
+        language_config._attn_implementation = 'flash_attention_2'
         self.language_model = LlamaForCausalLM(language_config)
 
     def prepare_inputs_embeds(
@@ -267,10 +268,12 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
 
     # --------------------------------------------------------------------------------------------------
     def forward(self, input_ids, labels, pixel_values, image_flags, gen_image_bounds, image_id):
+        use_image_placehold = True
+        use_und_gen = False
+
         pixel_values_in = pixel_values[0::2, ...]  # b,3,h,w
         pixel_values_out = pixel_values[1::2, ...]  # b,3,h,w
 
-        n = pixel_values_in.shape[0]
         # [b, 576, D]
         vision_model_dtype = next(self.vision_model.parameters()).dtype
         images_embeds_in = self.aligner(self.vision_model(pixel_values_in.to(dtype=vision_model_dtype)))
@@ -281,7 +284,15 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         images_embeds_out = self.gen_aligner(quant)
         images_embeds_out = images_embeds_out[image_flags == 1]
 
-        vit_embeds = torch.stack([images_embeds_in, images_embeds_out, images_embeds_out], dim=1).flatten(0, 1)
+        if use_image_placehold:
+            # 强制让第一个 image token 为固定值
+            placehold_img_embeds = self.prepare_gen_img_embeds(0)
+            images_embeds_out = torch.cat([placehold_img_embeds[None, None].repeat(images_embeds_out.shape[0], 1, 1),
+                                           images_embeds_out[:, 1:, ...]], dim=1)
+        if use_und_gen:
+            vit_embeds = torch.stack([images_embeds_out, images_embeds_out, images_embeds_out], dim=1).flatten(0, 1)
+        else:
+            vit_embeds = torch.stack([images_embeds_in, images_embeds_out], dim=1).flatten(0, 1)
 
         input_embeds = self.language_model.get_input_embeddings()(input_ids)
 
@@ -292,7 +303,6 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
 
         input_embeds[selected] = input_embeds[selected] * 0.0 + vit_embeds.reshape(-1, C)
         input_embeds = input_embeds.reshape(B, N, C)
-
         outputs = self.language_model.model(
             inputs_embeds=input_embeds,
             use_cache=False,
@@ -308,37 +318,46 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         for start, end in zip(start_bound, end_bound):
             mask[start:end] = True
 
-            # 取出 und_gen 的部分
-            # end_image, eos_id, bos_id, start_image
-            und_gen = end + 4
-            mask[und_gen:und_gen + 576] = True
+            if use_und_gen:
+                # 取出 und_gen 的部分
+                # end_image, eos_id, bos_id, start_image
+                und_gen = end + 4
+                mask[und_gen:und_gen + 576] = True
 
         assert torch.all(input_ids[mask] == image_id)
 
         hidden_states_gen = hidden_states[mask]
-        assert hidden_states_gen.shape[0] == images_embeds_out.shape[0] * images_embeds_out.shape[1] * 2
+        if use_und_gen:
+            assert hidden_states_gen.shape[0] == images_embeds_out.shape[0] * images_embeds_out.shape[1] * 2
+        else:
+            assert hidden_states_gen.shape[0] == images_embeds_out.shape[0] * images_embeds_out.shape[1]
 
         hidden_states_und = hidden_states[~mask]
 
         labels = labels.reshape(-1)
         und_labels = labels[~mask]
         gen_labels = info[2]
-        assert len(gen_labels) == len(labels[mask]) // 2
+
+        if use_und_gen:
+            assert len(gen_labels) == len(labels[mask]) // 2
+        else:
+            assert len(gen_labels) == len(labels[mask])
 
         gen_logits = self.gen_head(hidden_states_gen)
-
         # 有条件和无条件加权
         assert gen_logits.shape[0] % 576 == 0
-
         gen_logits = gen_logits.reshape(-1, 576, gen_logits.shape[-1])
-        logit_cond = gen_logits[0::2, ...]
-        logit_uncond = gen_logits[1::2, ...]
-        cfg_weight = 5
-        gen_logits = logit_uncond + cfg_weight * (logit_cond - logit_uncond)
-        gen_labels = gen_labels.reshape(-1, 576)
 
+        if use_und_gen:
+            logit_cond = gen_logits[0::2, ...]
+            logit_uncond = gen_logits[1::2, ...]
+            cfg_weight = 5
+            gen_logits = logit_uncond + cfg_weight * (logit_cond - logit_uncond)
+
+        gen_labels = gen_labels.reshape(-1, 576)
         gen_logits = gen_logits[:, :-1, ...].contiguous()
         gen_labels = gen_labels[:, 1:, ...].contiguous()
+
         gen_loss = F.cross_entropy(gen_logits.view(-1, gen_logits.shape[-1]).float(), gen_labels.view(-1),
                                    reduction='sum')  # 1, seqlen
         if torch.isnan(gen_loss) and (gen_labels[1:, ...] != -100).sum() == 0:
@@ -352,7 +371,6 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
         if torch.isnan(und_loss) and (und_labels != -100).sum() == 0:
             # When all labels are -100, the CE loss will return NaN and requires special handling.
             und_loss = und_logits.sum() * 0
-
         return gen_loss, und_loss
     # --------------------------------------------------------------------------------------------------
 

@@ -18,7 +18,7 @@ vl_gpt = vl_gpt.to(torch.bfloat16).cuda().eval()
 conversation = [
     {
         "role": "User",
-        "content": "A stunning princess from kabul in red, white traditional clothing, blue eyes, brown hair",
+        "content": "a woman standing in tall grass with a camera",
     },
     {"role": "Assistant", "content": ""},
 ]
@@ -37,7 +37,7 @@ def generate(
         vl_chat_processor: VLChatProcessor,
         prompt: str,
         temperature: float = 1,
-        parallel_size: int = 16,
+        parallel_size: int = 4,
         cfg_weight: float = 5,
         image_token_num_per_image: int = 576,
         img_size: int = 384,
