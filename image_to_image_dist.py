@@ -10,16 +10,17 @@ import json
 from mmengine.dist import infer_launcher, init_dist, get_world_size, get_rank, barrier, all_gather_object
 from mmengine.runner import set_random_seed
 import math
+import torch.distributed as dist
 
 if __name__ == '__main__':
     # specify the path to the model
     model_path = "/cpfs01/shared/llm_razor/huanghaian/code/xpuyu_vlm/xpuyu/vlm_tools/work_dirs/janus_sft7/hf-1292-of-1292"
     repeat_time = 3
-    seed = 42
-    use_jsonl = True
+    seed = 1024
+    random_choice_num_pre_gpu = 10
+
     media_root = '/cpfs01/shared/llm_razor/huanghaian/data/SEED-Data/SEED-Data-Edit-Part1-Unsplash/auto_editing/unsplash/images/'
     annotation = '/cpfs01/shared/llm_razor/huanghaian/data/SEED-Data/SEED-Data-Edit-Part1-Unsplash/seed_edit_part1_1210.jsonl'
-    random_choice_num_pre_gpu = 5
 
     dist_launcher = infer_launcher()
     init_dist(dist_launcher)
@@ -30,7 +31,7 @@ if __name__ == '__main__':
     with open(annotation) as f:
         data = f.readlines()
     data = [json.loads(d) for d in data]
-    data = random.choices(data, k=random_choice_num_pre_gpu*world_size)
+    data = random.choices(data, k=random_choice_num_pre_gpu * world_size)
 
     if rank == 0:
         os.makedirs('generated_samples', exist_ok=True)
@@ -46,6 +47,8 @@ if __name__ == '__main__':
         d = data[ids]
         image_path_in = d['conversations'][0]['images'][0]
         image_path = os.path.join(media_root, image_path_in)
+        image_path_out = d['conversations'][1]['images'][0]
+        image_path_out = os.path.join(media_root, image_path_out)
         input_ = d['conversations'][0]['value']
         input_ = input_.replace('<image>', '<image_placeholder>')
         conversation = [
@@ -54,7 +57,7 @@ if __name__ == '__main__':
                 "content": input_,
                 "images": [image_path]
             },
-            {"role": "Assistant", "content": ""},
+            {"role": "Assistant", "content":  d['conversations'][1]['value'], "images": [image_path_out]},
         ]
         all_conversation.append(conversation)
 
@@ -71,8 +74,14 @@ if __name__ == '__main__':
     pred_datas = []
 
     for k, conversation in enumerate(all_conversation):
+        target_text = conversation[1]['content']
+        target_image = conversation[1].pop('images')[0]
+        target_image = PIL.Image.open(target_image).convert('RGB').resize((384, 384))
+        target_image = np.array(target_image)
+        conversation[1]['content'] = ''
+
         print(f' {rank} ====================={k}============================')
-        print('input:', conversation[0]['content'], '====')
+        print('input:', conversation[0]['content'])
         pil_images = load_pil_images(conversation)
         prepare_inputs = vl_chat_processor(
             conversations=conversation, images=pil_images, force_batchify=True
@@ -81,7 +90,8 @@ if __name__ == '__main__':
         is_image_placehold = False
 
         for j in range(repeat_time):
-            pred_data = {"inputs": conversation[0]['content']}
+            sft_format = prepare_inputs.sft_format[0]
+            pred_data = {"inputs": sft_format, 'target': target_text}
 
             inputs_embeds = vl_gpt.prepare_inputs_embeds(**prepare_inputs)
 
@@ -126,7 +136,7 @@ if __name__ == '__main__':
                     break
 
             out_text = tokenizer.decode(text_tokens, skip_special_tokens=True)
-            print(f' {rank} output:', out_text, '=====================')
+            print(f' {rank} output:', out_text, '\ntarget', target_text, '=====================')
             pred_data[f'output'] = out_text
 
             with torch.no_grad():
@@ -139,7 +149,10 @@ if __name__ == '__main__':
                 visual_img[:, :, :] = dec
 
             save_path = os.path.join('generated_samples', "rank{}_{}_img_{}.jpg".format(rank, k, j))
-            PIL.Image.fromarray(visual_img[0]).save(save_path)
+            pred_img = visual_img[0]
+            input_image = np.array(pil_images[0].resize((384, 384)))
+            save_image = np.concatenate([input_image, target_image, pred_img], axis=1)
+            PIL.Image.fromarray(save_image).save(save_path)
             pred_data['file'] = "rank{}_{}_img_{}.jpg".format(rank, k, j)
             pred_datas.append(pred_data)
 
@@ -149,3 +162,5 @@ if __name__ == '__main__':
         with open('generated_samples/pred_datas.jsonl', 'w') as f:
             for item in pred_datas:
                 f.write(json.dumps(item) + '\n')
+    barrier()
+    dist.destroy_process_group()
