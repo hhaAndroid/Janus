@@ -20,7 +20,7 @@ if __name__ == '__main__':
     random_choice_num_pre_gpu = 10
 
     media_root = '/cpfs01/shared/llm_razor/huanghaian/data/SEED-Data/SEED-Data-Edit-Part1-Unsplash/auto_editing/unsplash/images/'
-    annotation = '/cpfs01/shared/llm_razor/huanghaian/data/SEED-Data/SEED-Data-Edit-Part1-Unsplash/seed_edit_part1_1210.jsonl'
+    annotation = '/cpfs01/shared/llm_razor/huanghaian/data/SEED-Data/SEED-Data-Edit-Part1-Unsplash/seed_edit_part1_1210_val.jsonl' # 500
 
     dist_launcher = infer_launcher()
     init_dist(dist_launcher)
